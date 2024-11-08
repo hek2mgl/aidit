@@ -8,11 +8,16 @@ import logging
 import os
 import subprocess
 import sys
+import atexit
+import code
+import readline
+
 
 import requests
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.prompt import Prompt
+from rich.text import Text
 
 
 # Dictionary mapping model aliases to their respective identifiers.
@@ -273,24 +278,51 @@ def init_logging(args):
     return log
 
 
-def input_prompt():
+class HistoryConsole(code.InteractiveConsole):
     """
-    Prompt the user for input until a non-empty response is received.
-
-    Continuously asks the user for input until they provide a non-empty string.
-    Displays an error message if the input is empty.
-
-    Returns:
-        str: The user's input prompt.
+    Derived from an example in the Python documentation
+    see: https://docs.python.org/3/library/readline.html
     """
-    while True:
-        username = os.environ.get("USER", "me")
-        prompt = Prompt.ask(f"🦆 [yellow]{username}").strip()
-        if not prompt:
-            Output().print("[dark_red]Your prompt is empty!")
-            continue
-        Output().print("---")
-        return prompt
+    def __init__(self, locals=None, filename="<console>",
+                 histfile=os.path.expanduser("~/.duckchat-history")):
+        code.InteractiveConsole.__init__(self, locals, filename)
+        self.init_len = 0
+        self.init_history(histfile)
+
+    def init_history(self, histfile):
+        readline.parse_and_bind("tab: complete")
+        if hasattr(readline, "read_history_file"):
+            try:
+                readline.read_history_file(histfile)
+                self.init_len = readline.get_current_history_length()
+            except FileNotFoundError:
+                pass
+            atexit.register(self.save_history, histfile)
+
+    def save_history(self, histfile):
+        new_len = readline.get_current_history_length()
+        readline.set_history_length(1000)
+        readline.append_history_file(new_len - self.init_len, histfile)
+
+    def read_prompt(self):
+        """
+        Prompt the user for input until a non-empty response is received.
+
+        Continuously asks the user for input until they provide a non-empty string.
+        Displays an error message if the input is empty.
+
+        Returns:
+            str: The user's input prompt.
+        """
+        while True:
+            username = os.environ.get("USER", "me")
+            prompt_prefix = f"🦆 \033[33m{username}\033[0m: "
+            prompt = self.raw_input(prompt=prompt_prefix)
+            if not prompt:
+                Output().print("[dark_red]Your prompt is empty!")
+                continue
+            Output().print("---")
+            return prompt
 
 
 def readfile(filename):
@@ -311,8 +343,12 @@ def readfile(filename):
 
 def passthru(command):
     # Execute the command and display the output
-    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE,
-stderr=subprocess.PIPE)
+    process = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     stdout, stderr = process.communicate()
 
     # Print the output
@@ -328,6 +364,7 @@ def spawn_shell(command_line):
     else:
         subprocess.run(['bash', '-c', command_line[1:]], env={"PS2": "(exit to return) >"})
 
+
 def main():
     """
     Main entry point for the CLI chat application.
@@ -339,6 +376,7 @@ def main():
     args = create_argparser().parse_args()
     init_logging(args)
     output = Output()
+    cnsl = HistoryConsole()
 
     if args.list_models:
         output.print_models()
@@ -366,7 +404,7 @@ def main():
                 if args.file:
                     prompt += " " + readfile(args.file)
             else:
-                prompt = input_prompt()
+                prompt = cnsl.read_prompt()
                 if prompt == "\\exit":
                     Output().print("bye!")
                     break
